@@ -1,0 +1,17 @@
+[package]
+name = "dns-iterate"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace]
+resolver = "2"
+members = [
+    "crates/mycelnet-dns-protocol",
+]
+
+[dependencies]
+mycelnet-dns-protocol = { path = "crates/mycelnet-dns-protocol" }
+
+tokio = { version = "1.33.0", features = ["full"] }
+anyhow = "1.0.75"
