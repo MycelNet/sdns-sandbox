@@ -1,5 +1,5 @@
 use anyhow::Result;
-use mycelnet_dns_protocol::DnsRequest;
+use mycelnet_dns_protocol::{DnsPacketData, DnsRequest};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 

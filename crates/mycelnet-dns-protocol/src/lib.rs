@@ -1,3 +1,38 @@
+use std::fmt::{Display, Formatter, Result};
+
+pub trait DnsPacketData {
+    fn from_bytes(data: &[u8]) -> Self;
+    fn to_bytes(&self) -> Vec<u8>;
+}
+
+#[derive(Debug, Default)]
+pub struct DnsRequest {
+    pub header: DnsHeader,
+    pub question: DnsQuestion,
+}
+
+impl DnsPacketData for DnsRequest {
+    fn from_bytes(data: &[u8]) -> DnsRequest {
+        DnsRequest {
+            header: DnsHeader::from_bytes(&data[0..12]),
+            question: DnsQuestion::from_bytes(&data[12..]),
+        }
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&self.header.to_bytes());
+        data.extend_from_slice(&self.question.to_bytes());
+        data
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct DnsResponse {
+    pub header: DnsHeader,
+    pub answer: DnsAnswer,
+}
+
 #[derive(Debug, Default)]
 pub struct DnsHeader {
     /// A 16 bit identifier assigned by the program that generates any kind of query.
@@ -13,70 +48,59 @@ pub struct DnsHeader {
     pub arcount: u16,
 }
 
-impl DnsHeader {
-    fn default() -> DnsHeader {
-        DnsHeader {
-            id: 0,
-            flags: DnsFlags::default(),
-            qdcount: 0,
-            ancount: 0,
-            nscount: 0,
-            arcount: 0,
-        }
-    }
-
-    pub fn from_bytes(data: &[u8]) -> DnsHeader {
+impl DnsPacketData for DnsHeader {
+    fn from_bytes(data: &[u8]) -> DnsHeader {
         // Output the binary representation of first 12 bytes
-        println!(
-            "{:0>8b}{:0>8b} {:0>8b}{:0>8b}",
-            data[0], data[1], data[2], data[3]
-        );
-        println!(
-            "{:0>8b}{:0>8b} {:0>8b}{:0>8b}",
-            data[4], data[5], data[6], data[7]
-        );
-        println!(
-            "{:0>8b}{:0>8b} {:0>8b}{:0>8b}",
-            data[8], data[9], data[10], data[11]
-        );
+        // println!(
+        //     "{:0>8b}{:0>8b} {:0>8b}{:0>8b}",
+        //     data[0], data[1], data[2], data[3]
+        // );
+        // println!(
+        //     "{:0>8b}{:0>8b} {:0>8b}{:0>8b}",
+        //     data[4], data[5], data[6], data[7]
+        // );
+        // println!(
+        //     "{:0>8b}{:0>8b} {:0>8b}{:0>8b}",
+        //     data[8], data[9], data[10], data[11]
+        // );
 
         // Output the binary representation of id (16 bits)
-        println!(
-            "id: {:0>16b} : {}",
-            ((data[0] as u16) << 8) | data[1] as u16,
-            ((data[0] as u16) << 8) | data[1] as u16
-        );
+        // println!(
+        //     "id: {:0>16b} : {}",
+        //     ((data[0] as u16) << 8) | data[1] as u16,
+        //     ((data[0] as u16) << 8) | data[1] as u16
+        // );
 
         // Output the binary representation of flags (16 bits)
-        println!("flags: {:0>16b}", ((data[2] as u16) << 8) | data[3] as u16);
+        // println!("flags: {:0>16b}", ((data[2] as u16) << 8) | data[3] as u16);
 
         // Output the binary representation of qdcount (16 bits)
-        println!(
-            "qd: {:0>16b} : {}",
-            ((data[4] as u16) << 8) | data[5] as u16,
-            ((data[4] as u16) << 8) | data[5] as u16
-        );
+        // println!(
+        //     "qd: {:0>16b} : {}",
+        //     ((data[4] as u16) << 8) | data[5] as u16,
+        //     ((data[4] as u16) << 8) | data[5] as u16
+        // );
 
         // Output the binary representation of ancount (16 bits)
-        println!(
-            "an: {:0>16b} : {}",
-            ((data[6] as u16) << 8) | data[7] as u16,
-            ((data[6] as u16) << 8) | data[7] as u16
-        );
+        // println!(
+        //     "an: {:0>16b} : {}",
+        //     ((data[6] as u16) << 8) | data[7] as u16,
+        //     ((data[6] as u16) << 8) | data[7] as u16
+        // );
 
         // Output the binary representation of nscount (16 bits)
-        println!(
-            "ns: {:0>16b} : {}",
-            ((data[8] as u16) << 8) | data[9] as u16,
-            ((data[8] as u16) << 8) | data[9] as u16
-        );
+        // println!(
+        //     "ns: {:0>16b} : {}",
+        //     ((data[8] as u16) << 8) | data[9] as u16,
+        //     ((data[8] as u16) << 8) | data[9] as u16
+        // );
 
         // Output the binary representation of arcount (16 bits)
-        println!(
-            "ar: {:0>16b} : {}",
-            ((data[10] as u16) << 8) | data[11] as u16,
-            ((data[10] as u16) << 8) | data[11] as u16
-        );
+        // println!(
+        //     "ar: {:0>16b} : {}",
+        //     ((data[10] as u16) << 8) | data[11] as u16,
+        //     ((data[10] as u16) << 8) | data[11] as u16
+        // );
 
         DnsHeader {
             id: ((data[0] as u16) << 8) | data[1] as u16,
@@ -88,7 +112,7 @@ impl DnsHeader {
         }
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Vec<u8> {
         let mut data = Vec::new();
         data.push((self.id >> 8) as u8);
         data.push(self.id as u8);
@@ -107,18 +131,7 @@ impl DnsHeader {
     }
 }
 
-#[derive(Debug, Default)]
-/// The DNS flags field is a 16 bit field that contains the following subfields:
-/// - QR (1 bit): A one bit field that specifies whether this message is a query (0), or a response (1).
-/// - OPCODE (4 bits): A four bit field that specifies kind of query in this message.
-/// - AA (1 bit): Authoritative Answer - this bit is valid in responses, and specifies that the responding name server is an authority for the domain name in question section.
-/// - TC (1 bit): TrunCation - specifies that this message was truncated due to length greater than that permitted on the transmission channel.
-/// - RD (1 bit): Recursion Desired - this bit may be set in a query and is copied into the response.
-/// - RA (1 bit): Recursion Available - this be is set or cleared in a response, and denotes whether recursive query support is available in the name server.
-/// - Z (3 bits): Reserved for future use. Must be zero in all queries and responses.
-/// - AD (1 bit): Authentic Data - this bit is only set in responses. When set, it signifies that the responding name server was an authority for the data in question section.
-/// - CD (1 bit): Checking Disabled - this bit is only set in queries. When set, it signifies that the querier desires some form of checking in the answer.
-/// - RCODE (4 bits): Response code - this 4 bit field is set as part of responses.
+#[derive(Debug)]
 pub struct DnsFlags {
     /// A one bit field that specifies whether this message is a query (0), or a response (1).
     pub qr: u8,
@@ -142,7 +155,7 @@ pub struct DnsFlags {
     pub rcode: DnsRcode,
 }
 
-impl DnsFlags {
+impl Default for DnsFlags {
     fn default() -> DnsFlags {
         DnsFlags {
             qr: 0,
@@ -157,21 +170,23 @@ impl DnsFlags {
             rcode: DnsRcode::NoError,
         }
     }
+}
 
-    pub fn from_bytes(data: &[u8]) -> DnsFlags {
-        println!("{:0>8b}{:0>8b}", data[0], data[1]);
-        println!("{:0>8b}", data[0]);
-        println!("qr: {:0>8b}", data[0] >> 7);
-        println!("op: {:0>8b}", (data[0] >> 3) & 0b00001111);
-        println!("aa: {:0>8b}", (data[0] >> 2) & 0b00000001);
-        println!("tc: {:0>8b}", (data[0] >> 1) & 0b00000001);
-        println!("rd: {:0>8b}", data[0] & 0b00000001);
-        println!("{:0>8b}", data[1]);
-        println!("ra: {:0>8b}", data[1] >> 7);
-        println!(" z: {:0>8b}", (data[1] >> 6) & 0b00000001);
-        println!("ad: {:0>8b}", (data[1] >> 5) & 0b00000001);
-        println!("cd: {:0>8b}", (data[1] >> 4) & 0b00000001);
-        println!("rc: {:0>8b}", data[1] & 0b00001111);
+impl DnsPacketData for DnsFlags {
+    fn from_bytes(data: &[u8]) -> DnsFlags {
+        // println!("{:0>8b}{:0>8b}", data[0], data[1]);
+        // println!("{:0>8b}", data[0]);
+        // println!("qr: {:0>8b}", data[0] >> 7);
+        // println!("op: {:0>8b}", (data[0] >> 3) & 0b00001111);
+        // println!("aa: {:0>8b}", (data[0] >> 2) & 0b00000001);
+        // println!("tc: {:0>8b}", (data[0] >> 1) & 0b00000001);
+        // println!("rd: {:0>8b}", data[0] & 0b00000001);
+        // println!("{:0>8b}", data[1]);
+        // println!("ra: {:0>8b}", data[1] >> 7);
+        // println!(" z: {:0>8b}", (data[1] >> 6) & 0b00000001);
+        // println!("ad: {:0>8b}", (data[1] >> 5) & 0b00000001);
+        // println!("cd: {:0>8b}", (data[1] >> 4) & 0b00000001);
+        // println!("rc: {:0>8b}", data[1] & 0b00001111);
 
         DnsFlags {
             qr: data[0] >> 7,
@@ -187,13 +202,13 @@ impl DnsFlags {
         }
     }
 
-    pub fn to_bytes(&self) -> [u8; 2] {
+    fn to_bytes(&self) -> Vec<u8> {
         let mut flags = [0; 2];
         flags[0] =
             (self.qr << 7) | (self.opcode.to_u8() << 3) | (self.aa << 2) | (self.tc << 1) | self.rd;
         flags[1] =
             (self.ra << 7) | (self.z << 4) | (self.ad << 3) | (self.cd << 2) | self.rcode.to_u8();
-        flags
+        flags.to_vec()
     }
 }
 
@@ -271,10 +286,33 @@ pub enum DnsRcode {
     NotAuth,
     /// NotZone - Name not contained in zone.
     NotZone,
+    /// Bad OPT Version - TSIG Signature Failure
+    BadOptVersion,
+    /// Bad Signature - Key not recognized
+    BadSignature,
+    /// Bad Key - Signature out of time window
+    BadKey,
+    /// Bad Timestamp - Bad TKEY Mode
+    BadTimestamp,
+    /// Bad Mode - Duplicate key name
+    BadMode,
+    /// Bad Name - Algorithm not supported
+    BadName,
+    /// Bad Alg - Bad truncation
+    BadAlg,
+    /// Bad Truncation - Bad/missing Server Cookie
+    BadTruncation,
+    /// Unassigned
+    Unassigned,
+    /// Reserved
+    Reserved,
 }
 
 impl DnsRcode {
     pub fn from_u8(rcode: u8) -> DnsRcode {
+        // Per rfc6895 section 2.3 4 bits are used in the header
+        let rcode = rcode & 0b00001111;
+
         match rcode {
             0 => DnsRcode::NoError,
             1 => DnsRcode::FormatError,
@@ -287,7 +325,38 @@ impl DnsRcode {
             8 => DnsRcode::NXRRSet,
             9 => DnsRcode::NotAuth,
             10 => DnsRcode::NotZone,
-            _ => DnsRcode::NotZone,
+            16 => DnsRcode::BadOptVersion,
+            _ => DnsRcode::Unassigned,
+        }
+    }
+
+    pub fn from_u16(rcode: u16) -> DnsRcode {
+        // Per rfc6895 section 2.3 4 bits are used in the header and 8 bits are used in the OPT record
+        let rcode = rcode & 0b0000111111111111;
+        match rcode {
+            0 => DnsRcode::NoError,
+            1 => DnsRcode::FormatError,
+            2 => DnsRcode::ServerFailure,
+            3 => DnsRcode::NameError,
+            4 => DnsRcode::NotImplemented,
+            5 => DnsRcode::Refused,
+            6 => DnsRcode::YXDomain,
+            7 => DnsRcode::YXRRSet,
+            8 => DnsRcode::NXRRSet,
+            9 => DnsRcode::NotAuth,
+            10 => DnsRcode::NotZone,
+            11..=15 => DnsRcode::Unassigned,
+            16 => DnsRcode::BadSignature,
+            17 => DnsRcode::BadKey,
+            18 => DnsRcode::BadTimestamp,
+            19 => DnsRcode::BadMode,
+            20 => DnsRcode::BadName,
+            21 => DnsRcode::BadAlg,
+            22 => DnsRcode::BadTruncation,
+            23..=3840 => DnsRcode::Unassigned,
+            3841..=4095 => DnsRcode::Reserved,
+            4096..=65534 => DnsRcode::Unassigned,
+            65535 => DnsRcode::Reserved,
         }
     }
 
@@ -304,96 +373,158 @@ impl DnsRcode {
             DnsRcode::NXRRSet => 8,
             DnsRcode::NotAuth => 9,
             DnsRcode::NotZone => 10,
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct DnsRequest {
-    pub header: DnsHeader,
-    pub question: DnsQuestion,
-}
-
-impl DnsRequest {
-    fn default() -> DnsRequest {
-        DnsRequest {
-            header: DnsHeader::default(),
-            question: DnsQuestion::default(),
+            DnsRcode::BadOptVersion => 16,
+            _ => 0,
         }
     }
 
-    pub fn from_bytes(data: &[u8]) -> DnsRequest {
-        let mut request = DnsRequest::default();
-        request.header = DnsHeader::from_bytes(&data[0..12]);
-        request.question = DnsQuestion::from_bytes(&data[12..]);
-        request
-    }
-
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut data = Vec::new();
-        data.extend_from_slice(&self.header.to_bytes());
-        data.extend_from_slice(&self.question.to_bytes());
-        data
+    pub fn to_u16(&self) -> u16 {
+        match self {
+            DnsRcode::NoError => 0,
+            DnsRcode::FormatError => 1,
+            DnsRcode::ServerFailure => 2,
+            DnsRcode::NameError => 3,
+            DnsRcode::NotImplemented => 4,
+            DnsRcode::Refused => 5,
+            DnsRcode::YXDomain => 6,
+            DnsRcode::YXRRSet => 7,
+            DnsRcode::NXRRSet => 8,
+            DnsRcode::NotAuth => 9,
+            DnsRcode::NotZone => 10,
+            DnsRcode::BadSignature => 16,
+            DnsRcode::BadKey => 17,
+            DnsRcode::BadTimestamp => 18,
+            DnsRcode::BadMode => 19,
+            DnsRcode::BadName => 20,
+            DnsRcode::BadAlg => 21,
+            DnsRcode::BadTruncation => 22,
+            _ => 0,
+        }
     }
 }
 
 #[derive(Debug, Default)]
 pub struct DnsQuestion {
     /// A domain name represented as a sequence of labels, where each label consists of a length octet followed by that number of octets.
-    pub qname: Vec<u8>,
-    /// String representation of qname labels
-    pub labels: Vec<String>,
+    pub qname: DnsName,
     /// A two octet code which specifies the type of the query.
-    pub qtype: u16,
+    pub qtype: DnsQType,
     /// A two octet code that specifies the class of the query.
-    pub qclass: u16,
+    pub qclass: DnsClass,
+    /// Raw bytes of the question
+    pub raw: Vec<u8>,
 }
 
-impl DnsQuestion {
-    pub fn from_bytes(data: &[u8]) -> DnsQuestion {
-        let mut question = DnsQuestion::default();
+impl DnsPacketData for DnsQuestion {
+    fn from_bytes(data: &[u8]) -> DnsQuestion {
+        let name = DnsName::from_bytes(data);
+
+        let index = name.name.len();
+        let qtype = ((data[index] as u16) << 8) | data[index + 1] as u16;
+        let qclass = ((data[index + 2] as u16) << 8) | data[index + 3] as u16;
+
+        DnsQuestion {
+            qname: name,
+            qtype: DnsQType::from_u16(qtype),
+            qclass: DnsClass::from_u16(qclass),
+            // qtype: ((data[index + 1] as u16) << 8) | data[index + 2] as u16,
+            // qclass: ((data[index + 3] as u16) << 8) | data[index + 4] as u16,
+            raw: data[..index + 4].to_vec(),
+        }
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&self.qname.to_bytes());
+        // data.push(0); // TODO: do we still need this?
+        // data.push((self.qtype >> 8) as u8);
+        data.extend(self.qtype.to_bytes());
+        // data.push((self.qclass >> 8) as u8);
+        data.extend(self.qclass.to_bytes());
+        data
+    }
+}
+
+#[derive(Debug)]
+pub struct DnsAnswer {
+    /// A domain name to which this resource record pertains.
+    pub name: Vec<u8>,
+    /// A two octet code which specifies the type of the query.
+    pub rtype: DnsQType,
+    /// A two octet code that specifies the class of the query.
+    pub rclass: u16,
+    /// A 32 bit unsigned integer that specifies the time interval (in seconds) that the resource record may be cached before it should be discarded.
+    pub ttl: u32,
+    /// An unsigned 16 bit integer that specifies the length in octets of the RDATA field.
+    pub rdlength: u16,
+    /// A variable length string of octets that describes the resource.
+    pub rdata: Vec<u8>,
+}
+
+impl Default for DnsAnswer {
+    fn default() -> DnsAnswer {
+        DnsAnswer {
+            name: Vec::new(),
+            rtype: DnsQType::A,
+            rclass: 0,
+            ttl: 0,
+            rdlength: 0,
+            rdata: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct DnsName {
+    pub name: Vec<u8>,
+    pub labels: Vec<String>,
+}
+
+impl DnsName {
+    pub fn count(&self) -> u8 {
+        self.labels.len() as u8
+    }
+}
+
+impl DnsPacketData for DnsName {
+    fn from_bytes(data: &[u8]) -> DnsName {
+        let mut name = DnsName::default();
 
         // Loop through bytes reading label length and then label then add to qname
         let mut index = 0;
         loop {
             let label_length = data[index];
             if label_length == 0 {
+                name.name.push(0);
                 break;
             }
             index += 1;
             let label = String::from_utf8(data[index..index + label_length as usize].to_vec())
                 .unwrap_or_else(|_| "".to_string());
-            question.labels.push(label);
-            question
-                .qname
-                .extend_from_slice(&data[index..index + label_length as usize]);
+            name.labels.push(label);
+            name.name
+                .extend_from_slice(&data[index - 1..index + label_length as usize]);
             index += label_length as usize;
         }
 
-        question.qtype = ((data[index + 1] as u16) << 8) | data[index + 2] as u16;
-        question.qclass = ((data[index + 3] as u16) << 8) | data[index + 4] as u16;
-        question
+        name
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Vec<u8> {
         let mut data = Vec::new();
-        data.extend_from_slice(&self.qname);
+        data.extend_from_slice(&self.name);
         data.push(0);
-        data.push((self.qtype >> 8) as u8);
-        data.push(self.qtype as u8);
-        data.push((self.qclass >> 8) as u8);
-        data.push(self.qclass as u8);
         data
     }
 }
 
-impl std::fmt::Display for DnsQuestion {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl Display for DnsName {
+    fn fmt(&self, f: &mut Formatter) -> Result {
         write!(f, "{}", self.labels.join("."))
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub enum DnsQType {
     #[default]
     A,
@@ -584,11 +715,6 @@ impl DnsQType {
         }
     }
 
-    pub fn from_bytes(data: &[u8]) -> DnsQType {
-        let qtype = ((data[0] as u16) << 8) | data[1] as u16;
-        DnsQType::from_u16(qtype)
-    }
-
     pub fn to_u16(&self) -> u16 {
         match self {
             DnsQType::A => 1,
@@ -683,34 +809,90 @@ impl DnsQType {
             DnsQType::Unassigned => 0,
         }
     }
+}
 
-    pub fn to_bytes(&self) -> [u8; 2] {
+impl DnsPacketData for DnsQType {
+    fn from_bytes(data: &[u8]) -> DnsQType {
+        let qtype = ((data[0] as u16) << 8) | data[1] as u16;
+        DnsQType::from_u16(qtype)
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
         let qtype = self.to_u16();
-        [(qtype >> 8) as u8, qtype as u8]
+        Vec::from([(qtype >> 8) as u8, qtype as u8])
     }
 }
 
-#[derive(Debug)]
-pub struct DnsAnswer {
-    pub name: String,
-    pub qtype: u16,
-    pub qclass: u16,
+#[derive(Debug, Default, PartialEq)]
+pub enum DnsClass {
+    #[default]
+    IN,
+    CS,
+    CH,
+    HS,
+    NONE,
+    ANY,
+    Unassigned,
+    Reserved,
+}
+
+impl DnsClass {
+    pub fn from_u16(rclass: u16) -> DnsClass {
+        match rclass {
+            1 => DnsClass::IN,
+            2 => DnsClass::CS,
+            3 => DnsClass::CH,
+            4 => DnsClass::HS,
+            254 => DnsClass::NONE,
+            255 => DnsClass::ANY,
+            0 => DnsClass::Reserved,
+            5..=253 => DnsClass::Unassigned,
+            65280..=65534 => DnsClass::Reserved,
+            65535 => DnsClass::Reserved,
+            _ => DnsClass::Unassigned,
+        }
+    }
+
+    pub fn to_u16(&self) -> u16 {
+        match self {
+            DnsClass::IN => 1,
+            DnsClass::CS => 2,
+            DnsClass::CH => 3,
+            DnsClass::HS => 4,
+            DnsClass::NONE => 254,
+            DnsClass::ANY => 255,
+            DnsClass::Reserved => 0,
+            DnsClass::Unassigned => 0,
+        }
+    }
+}
+
+impl DnsPacketData for DnsClass {
+    fn from_bytes(data: &[u8]) -> DnsClass {
+        let rclass = ((data[0] as u16) << 8) | data[1] as u16;
+        DnsClass::from_u16(rclass)
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        let rclass = self.to_u16();
+        Vec::from([(rclass >> 8) as u8, rclass as u8])
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct DnsResourceRecord {
+    /// A domain name to which this resource record pertains.
+    pub name: Vec<u8>,
+    /// A two octet code which specifies the type of the query.
+    pub rtype: DnsQType,
+    /// A two octet code that specifies the class of the query.
+    pub rclass: u16,
+    /// A 32 bit unsigned integer that specifies the time interval (in seconds) that the resource record may be cached before it should be discarded.
     pub ttl: u32,
+    /// An unsigned 16 bit integer that specifies the length in octets of the RDATA field.
     pub rdlength: u16,
-    pub rdata: String,
-}
-
-#[derive(Debug)]
-pub struct DnsRData {}
-
-pub fn encode_dns_name(name: &str) -> Vec<u8> {
-    let mut data = Vec::new();
-    for label in name.split('.') {
-        data.push(label.len() as u8);
-        data.extend_from_slice(label.as_bytes());
-    }
-    data.push(0);
-    data
+    /// A variable length string of octets that describes the resource.
+    pub rdata: Vec<u8>,
 }
 
 #[cfg(test)]
@@ -746,10 +928,18 @@ mod tests {
         assert_eq!(request.header.nscount, 0);
         assert_eq!(request.header.arcount, 1);
         assert_eq!(
-            request.question.labels,
+            request.question.qname.name,
+            vec![
+                0x08, 0x6d, 0x79, 0x63, 0x65, 0x6c, 0x6e, 0x65, 0x74, 0x04, 0x74, 0x65, 0x63, 0x68,
+                0x00,
+            ]
+        );
+        assert_eq!(request.question.qname.labels.len(), 2);
+        assert_eq!(
+            request.question.qname.labels,
             vec!["mycelnet".to_string(), "tech".to_string()]
         );
-        assert_eq!(request.question.qtype, DnsQType::A.to_u16());
-        assert_eq!(request.question.qclass, 1);
+        assert_eq!(request.question.qtype, DnsQType::A);
+        assert_eq!(request.question.qclass, DnsClass::IN);
     }
 }
