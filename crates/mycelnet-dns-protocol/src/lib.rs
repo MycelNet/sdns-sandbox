@@ -1,4 +1,7 @@
-use std::fmt::{Display, Formatter, Result};
+use std::{
+    collections::HashMap,
+    fmt::{Display, Formatter, Result},
+};
 
 pub trait DnsPacketData {
     fn from_bytes(data: &[u8]) -> Self;
@@ -30,7 +33,51 @@ impl DnsPacketData for DnsRequest {
 #[derive(Debug, Default)]
 pub struct DnsResponse {
     pub header: DnsHeader,
-    pub answer: DnsAnswer,
+    pub answer: DnsResourceRecord,
+}
+
+impl DnsResponse {
+    pub fn new() -> DnsResponse {
+        DnsResponse {
+            header: DnsHeader::default(),
+            answer: DnsResourceRecord::default(),
+        }
+    }
+
+    pub fn from_request(request: &DnsRequest) -> DnsResponse {
+        let mut response = DnsResponse::new();
+        response.header.id = request.header.id;
+        response.header.flags.qr = 1;
+        response.header.flags.rd = request.header.flags.rd;
+        response.header.flags.ra = 1;
+        response.header.qdcount = request.header.qdcount;
+        response.header.ancount = 1;
+        response.header.nscount = 0;
+        response.header.arcount = 0;
+        response.answer.name = request.question.qname.clone();
+        response.answer.rtype = request.question.qtype;
+        response.answer.rclass = request.question.qclass;
+        response.answer.ttl = 0;
+        response.answer.rdlength = 4;
+        response.answer.rdata = vec![127, 0, 0, 1];
+        response
+    }
+}
+
+impl DnsPacketData for DnsResponse {
+    fn from_bytes(data: &[u8]) -> DnsResponse {
+        DnsResponse {
+            header: DnsHeader::from_bytes(&data[0..12]),
+            answer: DnsResourceRecord::from_bytes(&data[12..]),
+        }
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&self.header.to_bytes());
+        data.extend_from_slice(&self.answer.to_bytes());
+        data
+    }
 }
 
 #[derive(Debug, Default)]
@@ -174,19 +221,19 @@ impl Default for DnsFlags {
 
 impl DnsPacketData for DnsFlags {
     fn from_bytes(data: &[u8]) -> DnsFlags {
-        // println!("{:0>8b}{:0>8b}", data[0], data[1]);
-        // println!("{:0>8b}", data[0]);
-        // println!("qr: {:0>8b}", data[0] >> 7);
-        // println!("op: {:0>8b}", (data[0] >> 3) & 0b00001111);
-        // println!("aa: {:0>8b}", (data[0] >> 2) & 0b00000001);
-        // println!("tc: {:0>8b}", (data[0] >> 1) & 0b00000001);
-        // println!("rd: {:0>8b}", data[0] & 0b00000001);
-        // println!("{:0>8b}", data[1]);
-        // println!("ra: {:0>8b}", data[1] >> 7);
-        // println!(" z: {:0>8b}", (data[1] >> 6) & 0b00000001);
-        // println!("ad: {:0>8b}", (data[1] >> 5) & 0b00000001);
-        // println!("cd: {:0>8b}", (data[1] >> 4) & 0b00000001);
-        // println!("rc: {:0>8b}", data[1] & 0b00001111);
+        println!("{:0>8b}{:0>8b}", data[0], data[1]);
+        println!("{:0>8b}", data[0]);
+        println!("qr: {:0>8b}", data[0] >> 7);
+        println!("op: {:0>8b}", (data[0] >> 3) & 0b00001111);
+        println!("aa: {:0>8b}", (data[0] >> 2) & 0b00000001);
+        println!("tc: {:0>8b}", (data[0] >> 1) & 0b00000001);
+        println!("rd: {:0>8b}", data[0] & 0b00000001);
+        println!("{:0>8b}", data[1]);
+        println!("ra: {:0>8b}", data[1] >> 7);
+        println!(" z: {:0>8b}", (data[1] >> 6) & 0b00000001);
+        println!("ad: {:0>8b}", (data[1] >> 5) & 0b00000001);
+        println!("cd: {:0>8b}", (data[1] >> 4) & 0b00000001);
+        println!("rc: {:0>8b}", data[1] & 0b00001111);
 
         DnsFlags {
             qr: data[0] >> 7,
@@ -195,9 +242,9 @@ impl DnsPacketData for DnsFlags {
             tc: (data[0] >> 1) & 0b00000001,
             rd: data[0] & 0b00000001,
             ra: data[1] >> 7,
-            z: (data[1] >> 4) & 0b00000001,
-            ad: (data[1] >> 3) & 0b00000001,
-            cd: (data[1] >> 2) & 0b00000001,
+            z: (data[1] >> 6) & 0b00000001,
+            ad: (data[1] >> 5) & 0b00000001,
+            cd: (data[1] >> 4) & 0b00000001,
             rcode: DnsRcode::from_u8(data[1] & 0b00001111),
         }
     }
@@ -207,12 +254,12 @@ impl DnsPacketData for DnsFlags {
         flags[0] =
             (self.qr << 7) | (self.opcode.to_u8() << 3) | (self.aa << 2) | (self.tc << 1) | self.rd;
         flags[1] =
-            (self.ra << 7) | (self.z << 4) | (self.ad << 3) | (self.cd << 2) | self.rcode.to_u8();
+            (self.ra << 7) | (self.z << 6) | (self.ad << 5) | (self.cd << 4) | self.rcode.to_u8();
         flags.to_vec()
     }
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Clone, Copy)]
 pub enum DnsOpcode {
     #[default]
     /// A standard query (QUERY)
@@ -261,7 +308,7 @@ impl DnsOpcode {
     }
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Clone, Copy)]
 pub enum DnsRcode {
     #[default]
     /// No error condition
@@ -411,8 +458,6 @@ pub struct DnsQuestion {
     pub qtype: DnsQType,
     /// A two octet code that specifies the class of the query.
     pub qclass: DnsClass,
-    /// Raw bytes of the question
-    pub raw: Vec<u8>,
 }
 
 impl DnsPacketData for DnsQuestion {
@@ -429,7 +474,6 @@ impl DnsPacketData for DnsQuestion {
             qclass: DnsClass::from_u16(qclass),
             // qtype: ((data[index + 1] as u16) << 8) | data[index + 2] as u16,
             // qclass: ((data[index + 3] as u16) << 8) | data[index + 4] as u16,
-            raw: data[..index + 4].to_vec(),
         }
     }
 
@@ -446,13 +490,13 @@ impl DnsPacketData for DnsQuestion {
 }
 
 #[derive(Debug)]
-pub struct DnsAnswer {
+pub struct DnsResourceRecord {
     /// A domain name to which this resource record pertains.
-    pub name: Vec<u8>,
+    pub name: DnsName,
     /// A two octet code which specifies the type of the query.
     pub rtype: DnsQType,
     /// A two octet code that specifies the class of the query.
-    pub rclass: u16,
+    pub rclass: DnsClass,
     /// A 32 bit unsigned integer that specifies the time interval (in seconds) that the resource record may be cached before it should be discarded.
     pub ttl: u32,
     /// An unsigned 16 bit integer that specifies the length in octets of the RDATA field.
@@ -461,20 +505,65 @@ pub struct DnsAnswer {
     pub rdata: Vec<u8>,
 }
 
-impl Default for DnsAnswer {
-    fn default() -> DnsAnswer {
-        DnsAnswer {
-            name: Vec::new(),
+impl Default for DnsResourceRecord {
+    fn default() -> DnsResourceRecord {
+        DnsResourceRecord {
+            name: DnsName::default(),
             rtype: DnsQType::A,
-            rclass: 0,
-            ttl: 0,
+            rclass: DnsClass::IN,
+            ttl: 300,
             rdlength: 0,
             rdata: Vec::new(),
         }
     }
 }
 
+impl DnsPacketData for DnsResourceRecord {
+    fn from_bytes(data: &[u8]) -> Self {
+        let name = DnsName::from_bytes(data);
+
+        let index = name.name.len();
+        let rtype = ((data[index] as u16) << 8) | data[index + 1] as u16;
+        let rclass = ((data[index + 2] as u16) << 8) | data[index + 3] as u16;
+        let ttl = ((data[index + 4] as u32) << 24)
+            | ((data[index + 5] as u32) << 16)
+            | ((data[index + 6] as u32) << 8)
+            | data[index + 7] as u32;
+        let rdlength = ((data[index + 8] as u16) << 8) | data[index + 9] as u16;
+        let rdata = data[index + 10..index + 10 + rdlength as usize].to_vec();
+
+        DnsResourceRecord {
+            name,
+            rtype: DnsQType::from_u16(rtype),
+            rclass: DnsClass::from_u16(rclass),
+            ttl,
+            rdlength,
+            rdata,
+        }
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&self.name.to_bytes());
+        data.extend(self.rtype.to_bytes());
+        data.extend(self.rclass.to_bytes());
+        data.push((self.ttl >> 24) as u8);
+        data.push((self.ttl >> 16) as u8);
+        data.push((self.ttl >> 8) as u8);
+        data.push(self.ttl as u8);
+        data.push((self.rdlength >> 8) as u8);
+        data.push(self.rdlength as u8);
+        data.extend_from_slice(&self.rdata);
+        data
+    }
+}
+
 #[derive(Debug, Default)]
+pub struct DnsRDataCname {
+    pub cname: DnsName,
+}
+
+#[derive(Debug, Default, Clone)]
 pub struct DnsName {
     pub name: Vec<u8>,
     pub labels: Vec<String>,
@@ -492,28 +581,72 @@ impl DnsPacketData for DnsName {
 
         // Loop through bytes reading label length and then label then add to qname
         let mut index = 0;
+        let mut label_indexes = HashMap::<u8, String>::new();
+
         loop {
             let label_length = data[index];
+
+            // Check if label is null byte
             if label_length == 0 {
                 name.name.push(0);
                 break;
             }
+
+            // Check if label is a pointer to another label
+            if label_length & 0b11000000 == 0b11000000 {
+                let pointer = ((label_length & 0b00111111) as u16) << 8 | data[index + 1] as u16;
+                let pointer_index = pointer as usize;
+                let pointer_label = &label_indexes[&(pointer_index as u8)];
+
+                // Add pointer label to labels and name
+                name.labels.push(pointer_label.to_owned());
+                name.name
+                    .extend_from_slice(&data[pointer_index..pointer_label.len() + 1]);
+
+                // Skip to next label
+                index += 2;
+                continue;
+            }
+
             index += 1;
             let label = String::from_utf8(data[index..index + label_length as usize].to_vec())
                 .unwrap_or_else(|_| "".to_string());
-            name.labels.push(label);
+            name.labels.push(label.to_owned());
             name.name
                 .extend_from_slice(&data[index - 1..index + label_length as usize]);
+            label_indexes.insert(index as u8, label.to_owned());
             index += label_length as usize;
         }
 
         name
     }
 
+    /// Convert a domain name to bytes using the format specified in RFC 1035 section 4.1.4
+    /// Use name compression if possible
     fn to_bytes(&self) -> Vec<u8> {
         let mut data = Vec::new();
-        data.extend_from_slice(&self.name);
+        let mut pointer_reference = HashMap::<String, u8>::new();
+
+        // Loop through labels and add to data
+        for label in &self.labels {
+            // Add pointer reference if label has already been added
+            if let Some(index) = pointer_reference.get(label) {
+                data.push(0b11000000 | *index);
+                continue;
+            }
+
+            // Add label length and label to data
+            data.push(label.len() as u8);
+            data.extend_from_slice(label.as_bytes());
+
+            // Add pointer reference to hashmap
+            let label_index: u8 = data.len() as u8 - (label.len() - 1) as u8;
+            pointer_reference.insert(label.to_owned(), label_index);
+        }
+
+        // Add null byte to end of name
         data.push(0);
+
         data
     }
 }
@@ -524,7 +657,7 @@ impl Display for DnsName {
     }
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Clone, Copy)]
 pub enum DnsQType {
     #[default]
     A,
@@ -823,7 +956,7 @@ impl DnsPacketData for DnsQType {
     }
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Clone, Copy)]
 pub enum DnsClass {
     #[default]
     IN,
@@ -920,7 +1053,7 @@ mod tests {
         assert_eq!(request.header.flags.rd, 1);
         assert_eq!(request.header.flags.ra, 0);
         assert_eq!(request.header.flags.z, 0);
-        assert_eq!(request.header.flags.ad, 0);
+        assert_eq!(request.header.flags.ad, 1);
         assert_eq!(request.header.flags.cd, 0);
         assert_eq!(request.header.flags.rcode, DnsRcode::NoError);
         assert_eq!(request.header.qdcount, 1);
@@ -941,5 +1074,7 @@ mod tests {
         );
         assert_eq!(request.question.qtype, DnsQType::A);
         assert_eq!(request.question.qclass, DnsClass::IN);
+
+        assert_eq!(data, request.to_bytes());
     }
 }
