@@ -1,51 +1,101 @@
 use std::{
     collections::HashMap,
-    fmt::{Display, Formatter, Result},
+    fmt::{Debug, Display, Formatter},
 };
 
-pub trait DnsPacketData {
-    fn from_bytes(data: &[u8]) -> Self;
-    fn to_bytes(&self) -> Vec<u8>;
+use anyhow::{Context, Result};
+
+pub trait DnsPacketData: Sized {
+    fn from_bytes(data: &[u8], offset: usize) -> Result<Self>;
+    fn to_bytes(&self) -> Result<Vec<u8>>;
 }
 
 #[derive(Debug, Default)]
 pub struct DnsRequest {
     pub header: DnsHeader,
     pub question: DnsQuestion,
+    pub additional: Option<Vec<DnsResourceRecord>>,
 }
 
 impl DnsPacketData for DnsRequest {
-    fn from_bytes(data: &[u8]) -> DnsRequest {
-        DnsRequest {
-            header: DnsHeader::from_bytes(&data[0..12]),
-            question: DnsQuestion::from_bytes(&data[12..]),
+    fn from_bytes(data: &[u8], offset: usize) -> Result<DnsRequest> {
+        let mut request = DnsRequest {
+            header: DnsHeader::from_bytes(data, offset)
+                .with_context(|| format!("Failed to parse DNS header"))?,
+            question: DnsQuestion::from_bytes(data, offset + 12).with_context(|| {
+                format!("Failed to parse DNS question at offset {}", offset + 12)
+            })?,
+            additional: None,
+        };
+
+        // Parse additional records if they exist
+        if request.header.arcount > 0 {
+            let mut additional = Vec::new();
+            let mut index = offset + 12 + request.question.qname.length() + 4;
+
+            for _ in 0..request.header.arcount {
+                let record = DnsResourceRecord::from_bytes(data, index).with_context(|| {
+                    format!("Failed to parse DNS additional record at offset {}", index)
+                })?;
+
+                index += record.name.length() + 10 + record.rdlength as usize;
+                additional.push(record);
+            }
+
+            request.additional = Some(additional);
         }
+
+        Ok(request)
     }
 
-    fn to_bytes(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
         let mut data = Vec::new();
-        data.extend_from_slice(&self.header.to_bytes());
-        data.extend_from_slice(&self.question.to_bytes());
-        data
+
+        data.extend_from_slice(
+            &self
+                .header
+                .to_bytes()
+                .with_context(|| format!("Failed to serialize DNS header {:?}", self.header))?,
+        );
+
+        data.extend_from_slice(
+            &self
+                .question
+                .to_bytes()
+                .with_context(|| format!("Failed to serialize DNS question {:?}", self.question))?,
+        );
+
+        if let Some(additional) = &self.additional {
+            for record in additional {
+                data.extend_from_slice(&record.to_bytes().with_context(|| {
+                    format!("Failed to serialize DNS additional record {:?}", record)
+                })?);
+            }
+        }
+
+        Ok(data)
     }
 }
 
 #[derive(Debug, Default)]
 pub struct DnsResponse {
     pub header: DnsHeader,
-    pub answer: DnsResourceRecord,
+    pub question: DnsQuestion,
+    pub answers: Option<Vec<DnsResourceRecord>>,
 }
 
 impl DnsResponse {
     pub fn new() -> DnsResponse {
         DnsResponse {
             header: DnsHeader::default(),
-            answer: DnsResourceRecord::default(),
+            question: DnsQuestion::default(),
+            answers: None,
         }
     }
 
     pub fn from_request(request: &DnsRequest) -> DnsResponse {
         let mut response = DnsResponse::new();
+
         response.header.id = request.header.id;
         response.header.flags.qr = 1;
         response.header.flags.rd = request.header.flags.rd;
@@ -54,29 +104,70 @@ impl DnsResponse {
         response.header.ancount = 1;
         response.header.nscount = 0;
         response.header.arcount = 0;
-        response.answer.name = request.question.qname.clone();
-        response.answer.rtype = request.question.qtype;
-        response.answer.rclass = request.question.qclass;
-        response.answer.ttl = 0;
-        response.answer.rdlength = 4;
-        response.answer.rdata = vec![127, 0, 0, 1];
+        response.question = request.question.clone();
+        response.answers = Some(vec![DnsResourceRecord {
+            name: request.question.qname.clone(),
+            rtype: request.question.qtype,
+            rclass: request.question.qclass,
+            ttl: 300,
+            rdlength: 4,
+            rdata: vec![127, 0, 0, 1],
+        }]);
+
         response
     }
 }
 
 impl DnsPacketData for DnsResponse {
-    fn from_bytes(data: &[u8]) -> DnsResponse {
-        DnsResponse {
-            header: DnsHeader::from_bytes(&data[0..12]),
-            answer: DnsResourceRecord::from_bytes(&data[12..]),
+    fn from_bytes(data: &[u8], offset: usize) -> Result<DnsResponse> {
+        let mut response = DnsResponse::new();
+
+        response.header = DnsHeader::from_bytes(data, offset)
+            .with_context(|| "Failed to parse DNS header".to_string())?;
+        response.question = DnsQuestion::from_bytes(data, offset + 12)
+            .with_context(|| format!("Failed to parse DNS question at offset {}", offset + 12))?;
+
+        let mut index = offset + 12 + response.question.qname.length() + 4;
+        for _ in 0..response.header.ancount {
+            let record = DnsResourceRecord::from_bytes(data, index).with_context(|| {
+                format!("Failed to parse DNS resource record at offset {}", index)
+            })?;
+            index += record.name.length() + 10 + record.rdlength as usize;
+            if response.answers.is_none() {
+                response.answers = Some(Vec::new());
+            }
+            response.answers.as_mut().unwrap().push(record);
         }
+
+        Ok(response)
     }
 
-    fn to_bytes(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
         let mut data = Vec::new();
-        data.extend_from_slice(&self.header.to_bytes());
-        data.extend_from_slice(&self.answer.to_bytes());
-        data
+
+        data.extend_from_slice(
+            &self
+                .header
+                .to_bytes()
+                .with_context(|| format!("Failed to serialize DNS header {:?}", self.header))?,
+        );
+
+        data.extend_from_slice(
+            &self
+                .question
+                .to_bytes()
+                .with_context(|| format!("Failed to serialize DNS question {:?}", self.question))?,
+        );
+
+        if let Some(answers) = &self.answers {
+            for record in answers {
+                data.extend_from_slice(&record.to_bytes().with_context(|| {
+                    format!("Failed to serialize DNS resource record {:?}", record)
+                })?);
+            }
+        }
+
+        Ok(data)
     }
 }
 
@@ -96,74 +187,29 @@ pub struct DnsHeader {
 }
 
 impl DnsPacketData for DnsHeader {
-    fn from_bytes(data: &[u8]) -> DnsHeader {
-        // Output the binary representation of first 12 bytes
-        // println!(
-        //     "{:0>8b}{:0>8b} {:0>8b}{:0>8b}",
-        //     data[0], data[1], data[2], data[3]
-        // );
-        // println!(
-        //     "{:0>8b}{:0>8b} {:0>8b}{:0>8b}",
-        //     data[4], data[5], data[6], data[7]
-        // );
-        // println!(
-        //     "{:0>8b}{:0>8b} {:0>8b}{:0>8b}",
-        //     data[8], data[9], data[10], data[11]
-        // );
+    fn from_bytes(data: &[u8], offset: usize) -> Result<DnsHeader> {
+        let header = DnsHeader {
+            id: ((data[offset] as u16) << 8) | data[offset + 1] as u16,
+            flags: DnsFlags::from_bytes(data, 2)
+                .with_context(|| "Failed to parse DNS flags".to_string())?,
+            qdcount: ((data[offset + 4] as u16) << 8) | data[offset + 5] as u16,
+            ancount: ((data[offset + 6] as u16) << 8) | data[offset + 7] as u16,
+            nscount: ((data[offset + 8] as u16) << 8) | data[offset + 9] as u16,
+            arcount: ((data[offset + 10] as u16) << 8) | data[offset + 11] as u16,
+        };
 
-        // Output the binary representation of id (16 bits)
-        // println!(
-        //     "id: {:0>16b} : {}",
-        //     ((data[0] as u16) << 8) | data[1] as u16,
-        //     ((data[0] as u16) << 8) | data[1] as u16
-        // );
-
-        // Output the binary representation of flags (16 bits)
-        // println!("flags: {:0>16b}", ((data[2] as u16) << 8) | data[3] as u16);
-
-        // Output the binary representation of qdcount (16 bits)
-        // println!(
-        //     "qd: {:0>16b} : {}",
-        //     ((data[4] as u16) << 8) | data[5] as u16,
-        //     ((data[4] as u16) << 8) | data[5] as u16
-        // );
-
-        // Output the binary representation of ancount (16 bits)
-        // println!(
-        //     "an: {:0>16b} : {}",
-        //     ((data[6] as u16) << 8) | data[7] as u16,
-        //     ((data[6] as u16) << 8) | data[7] as u16
-        // );
-
-        // Output the binary representation of nscount (16 bits)
-        // println!(
-        //     "ns: {:0>16b} : {}",
-        //     ((data[8] as u16) << 8) | data[9] as u16,
-        //     ((data[8] as u16) << 8) | data[9] as u16
-        // );
-
-        // Output the binary representation of arcount (16 bits)
-        // println!(
-        //     "ar: {:0>16b} : {}",
-        //     ((data[10] as u16) << 8) | data[11] as u16,
-        //     ((data[10] as u16) << 8) | data[11] as u16
-        // );
-
-        DnsHeader {
-            id: ((data[0] as u16) << 8) | data[1] as u16,
-            flags: DnsFlags::from_bytes(&data[2..4] as &[u8]),
-            qdcount: ((data[4] as u16) << 8) | data[5] as u16,
-            ancount: ((data[6] as u16) << 8) | data[7] as u16,
-            nscount: ((data[8] as u16) << 8) | data[9] as u16,
-            arcount: ((data[10] as u16) << 8) | data[11] as u16,
-        }
+        Ok(header)
     }
 
-    fn to_bytes(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
         let mut data = Vec::new();
         data.push((self.id >> 8) as u8);
         data.push(self.id as u8);
-        let flags = self.flags.to_bytes();
+
+        let flags = self
+            .flags
+            .to_bytes()
+            .with_context(|| "Failed to serialize DNS flags".to_string())?;
         data.push(flags[0]);
         data.push(flags[1]);
         data.push((self.qdcount >> 8) as u8);
@@ -174,11 +220,11 @@ impl DnsPacketData for DnsHeader {
         data.push(self.nscount as u8);
         data.push((self.arcount >> 8) as u8);
         data.push(self.arcount as u8);
-        data
+
+        Ok(data)
     }
 }
 
-#[derive(Debug)]
 pub struct DnsFlags {
     /// A one bit field that specifies whether this message is a query (0), or a response (1).
     pub qr: u8,
@@ -220,42 +266,139 @@ impl Default for DnsFlags {
 }
 
 impl DnsPacketData for DnsFlags {
-    fn from_bytes(data: &[u8]) -> DnsFlags {
-        println!("{:0>8b}{:0>8b}", data[0], data[1]);
-        println!("{:0>8b}", data[0]);
-        println!("qr: {:0>8b}", data[0] >> 7);
-        println!("op: {:0>8b}", (data[0] >> 3) & 0b00001111);
-        println!("aa: {:0>8b}", (data[0] >> 2) & 0b00000001);
-        println!("tc: {:0>8b}", (data[0] >> 1) & 0b00000001);
-        println!("rd: {:0>8b}", data[0] & 0b00000001);
-        println!("{:0>8b}", data[1]);
-        println!("ra: {:0>8b}", data[1] >> 7);
-        println!(" z: {:0>8b}", (data[1] >> 6) & 0b00000001);
-        println!("ad: {:0>8b}", (data[1] >> 5) & 0b00000001);
-        println!("cd: {:0>8b}", (data[1] >> 4) & 0b00000001);
-        println!("rc: {:0>8b}", data[1] & 0b00001111);
+    fn from_bytes(data: &[u8], offset: usize) -> Result<DnsFlags> {
+        let flags = DnsFlags {
+            qr: data[offset] >> 7,
+            opcode: DnsOpcode::from_u8((data[offset] >> 3) & 0b00001111),
+            aa: (data[offset] >> 2) & 0b00000001,
+            tc: (data[offset] >> 1) & 0b00000001,
+            rd: data[offset] & 0b00000001,
+            ra: data[offset + 1] >> 7,
+            z: (data[offset + 1] >> 6) & 0b00000001,
+            ad: (data[offset + 1] >> 5) & 0b00000001,
+            cd: (data[offset + 1] >> 4) & 0b00000001,
+            rcode: DnsRcode::from_u8(data[offset + 1] & 0b00001111),
+        };
 
-        DnsFlags {
-            qr: data[0] >> 7,
-            opcode: DnsOpcode::from_u8((data[0] >> 3) & 0b00001111),
-            aa: (data[0] >> 2) & 0b00000001,
-            tc: (data[0] >> 1) & 0b00000001,
-            rd: data[0] & 0b00000001,
-            ra: data[1] >> 7,
-            z: (data[1] >> 6) & 0b00000001,
-            ad: (data[1] >> 5) & 0b00000001,
-            cd: (data[1] >> 4) & 0b00000001,
-            rcode: DnsRcode::from_u8(data[1] & 0b00001111),
-        }
+        Ok(flags)
     }
 
-    fn to_bytes(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
         let mut flags = [0; 2];
         flags[0] =
             (self.qr << 7) | (self.opcode.to_u8() << 3) | (self.aa << 2) | (self.tc << 1) | self.rd;
         flags[1] =
             (self.ra << 7) | (self.z << 6) | (self.ad << 5) | (self.cd << 4) | self.rcode.to_u8();
-        flags.to_vec()
+
+        Ok(flags.to_vec())
+    }
+}
+
+impl Debug for DnsFlags {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        // Output flags as binary
+        let qr_result = writeln!(
+            f,
+            "{:0>4b} {:0>4b} {:0>4b} {:0>4b} = Response code: {:?}",
+            self.qr << 3,
+            0x0,
+            0x0,
+            0x0,
+            self.qr >> 7
+        );
+
+        let opcode_result = writeln!(
+            f,
+            "{:0>4b} {:0>4b} {:0>4b} {:0>4b} = Opcode: {:?}",
+            self.opcode.to_u8() >> 1,
+            self.opcode.to_u8() << 3 & 0b1000,
+            0x0,
+            0x0,
+            self.opcode
+        );
+
+        let aa_result = writeln!(
+            f,
+            "{:0>4b} {:0>4b} {:0>4b} {:0>4b} = Authoritative Answer: {}",
+            0x0,
+            self.aa << 2,
+            0x0,
+            0x0,
+            self.aa
+        );
+
+        let tc_result = writeln!(
+            f,
+            "{:0>4b} {:0>4b} {:0>4b} {:0>4b} = TrunCation: {}",
+            0x0,
+            self.tc << 1,
+            0x0,
+            0x0,
+            self.tc
+        );
+
+        let rd_result = writeln!(
+            f,
+            "{:0>4b} {:0>4b} {:0>4b} {:0>4b} = Recursion Desired: {}",
+            0x0, self.rd, 0x0, 0x0, self.rd
+        );
+
+        let ra_result = writeln!(
+            f,
+            "{:0>4b} {:0>4b} {:0>4b} {:0>4b} = Recursion Available: {}",
+            0x0,
+            0x0,
+            self.ra << 3,
+            0x0,
+            self.ra
+        );
+
+        let z_result = writeln!(
+            f,
+            "{:0>4b} {:0>4b} {:0>4b} {:0>4b} = Reserved: {}",
+            0x0,
+            0x0,
+            self.z << 2,
+            0x0,
+            self.z
+        );
+
+        let ad_result = writeln!(
+            f,
+            "{:0>4b} {:0>4b} {:0>4b} {:0>4b} = Authentication Data: {}",
+            0x0,
+            0x0,
+            self.ad << 1,
+            0x0,
+            self.ad
+        );
+
+        let cd_result = writeln!(
+            f,
+            "{:0>4b} {:0>4b} {:0>4b} {:0>4b} = Checking Disabled: {}",
+            0x0, 0x0, self.cd, 0x0, self.cd
+        );
+
+        let rcode_result = writeln!(
+            f,
+            "{:0>4b} {:0>4b} {:0>4b} {:0>4b} = Response code: {:?}",
+            0x0,
+            0x0,
+            0x0,
+            self.rcode.to_u8(),
+            self.rcode
+        );
+
+        qr_result
+            .and(opcode_result)
+            .and(aa_result)
+            .and(tc_result)
+            .and(rd_result)
+            .and(ra_result)
+            .and(z_result)
+            .and(ad_result)
+            .and(cd_result)
+            .and(rcode_result)
     }
 }
 
@@ -450,7 +593,7 @@ impl DnsRcode {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct DnsQuestion {
     /// A domain name represented as a sequence of labels, where each label consists of a length octet followed by that number of octets.
     pub qname: DnsName,
@@ -461,31 +604,46 @@ pub struct DnsQuestion {
 }
 
 impl DnsPacketData for DnsQuestion {
-    fn from_bytes(data: &[u8]) -> DnsQuestion {
-        let name = DnsName::from_bytes(data);
+    fn from_bytes(data: &[u8], offset: usize) -> Result<DnsQuestion> {
+        let name = DnsName::from_bytes(data, offset)
+            .with_context(|| format!("Failed to parse DNS question name at offset {}", offset))?;
 
-        let index = name.name.len();
+        let index = offset + name.length();
         let qtype = ((data[index] as u16) << 8) | data[index + 1] as u16;
         let qclass = ((data[index + 2] as u16) << 8) | data[index + 3] as u16;
 
-        DnsQuestion {
+        let question = DnsQuestion {
             qname: name,
             qtype: DnsQType::from_u16(qtype),
             qclass: DnsClass::from_u16(qclass),
-            // qtype: ((data[index + 1] as u16) << 8) | data[index + 2] as u16,
-            // qclass: ((data[index + 3] as u16) << 8) | data[index + 4] as u16,
-        }
+        };
+
+        Ok(question)
     }
 
-    fn to_bytes(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
         let mut data = Vec::new();
-        data.extend_from_slice(&self.qname.to_bytes());
+
+        data.extend_from_slice(
+            &self.qname.to_bytes().with_context(|| {
+                format!("Failed to serialize DNS question name {:?}", self.qname)
+            })?,
+        );
+
         // data.push(0); // TODO: do we still need this?
         // data.push((self.qtype >> 8) as u8);
-        data.extend(self.qtype.to_bytes());
+        data.extend(
+            self.qtype.to_bytes().with_context(|| {
+                format!("Failed to serialize DNS question type {:?}", self.qtype)
+            })?,
+        );
+
         // data.push((self.qclass >> 8) as u8);
-        data.extend(self.qclass.to_bytes());
-        data
+        data.extend(self.qclass.to_bytes().with_context(|| {
+            format!("Failed to serialize DNS question class {:?}", self.qclass)
+        })?);
+
+        Ok(data)
     }
 }
 
@@ -519,11 +677,32 @@ impl Default for DnsResourceRecord {
 }
 
 impl DnsPacketData for DnsResourceRecord {
-    fn from_bytes(data: &[u8]) -> Self {
-        let name = DnsName::from_bytes(data);
+    fn from_bytes(data: &[u8], offset: usize) -> Result<DnsResourceRecord> {
+        let name = DnsName::from_bytes(data, offset).with_context(|| {
+            format!(
+                "Failed to parse DNS resource record name at offset {}",
+                offset
+            )
+        })?;
 
-        let index = name.name.len();
+        let index = offset + name.length();
         let rtype = ((data[index] as u16) << 8) | data[index + 1] as u16;
+
+        // If rtype is 41 then this is an OPT extension request not a standard resource record
+        // We need to additional information to properly process the request
+        if rtype == 41 {
+            // TODO: parse OPT extension request
+            let rr = DnsResourceRecord {
+                name,
+                rtype: DnsQType::from_u16(rtype),
+                rclass: DnsClass::IN,
+                ttl: 0,
+                rdlength: data.len() as u16 - index as u16 - 2,
+                rdata: data[index + 2..].to_vec(),
+            };
+
+            return Ok(rr);
+        }
         let rclass = ((data[index + 2] as u16) << 8) | data[index + 3] as u16;
         let ttl = ((data[index + 4] as u32) << 24)
             | ((data[index + 5] as u32) << 16)
@@ -532,29 +711,53 @@ impl DnsPacketData for DnsResourceRecord {
         let rdlength = ((data[index + 8] as u16) << 8) | data[index + 9] as u16;
         let rdata = data[index + 10..index + 10 + rdlength as usize].to_vec();
 
-        DnsResourceRecord {
+        let rr = DnsResourceRecord {
             name,
             rtype: DnsQType::from_u16(rtype),
             rclass: DnsClass::from_u16(rclass),
             ttl,
             rdlength,
             rdata,
-        }
+        };
+
+        Ok(rr)
     }
 
-    fn to_bytes(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
         let mut data = Vec::new();
-        data.extend_from_slice(&self.name.to_bytes());
-        data.extend(self.rtype.to_bytes());
-        data.extend(self.rclass.to_bytes());
-        data.push((self.ttl >> 24) as u8);
-        data.push((self.ttl >> 16) as u8);
-        data.push((self.ttl >> 8) as u8);
-        data.push(self.ttl as u8);
-        data.push((self.rdlength >> 8) as u8);
-        data.push(self.rdlength as u8);
-        data.extend_from_slice(&self.rdata);
-        data
+        data.extend_from_slice(&self.name.to_bytes().with_context(|| {
+            format!(
+                "Failed to serialize DNS resource record name {:?}",
+                self.name
+            )
+        })?);
+
+        data.extend(self.rtype.to_bytes().with_context(|| {
+            format!(
+                "Failed to serialize DNS resource record type {:?}",
+                self.rtype
+            )
+        })?);
+
+        if self.rtype == DnsQType::OPT {
+            data.extend_from_slice(&self.rdata);
+        } else {
+            data.extend(self.rclass.to_bytes().with_context(|| {
+                format!(
+                    "Failed to serialize DNS resource record class {:?}",
+                    self.rclass
+                )
+            })?);
+            data.push((self.ttl >> 24) as u8);
+            data.push((self.ttl >> 16) as u8);
+            data.push((self.ttl >> 8) as u8);
+            data.push(self.ttl as u8);
+            data.push((self.rdlength >> 8) as u8);
+            data.push(self.rdlength as u8);
+            data.extend_from_slice(&self.rdata);
+        }
+
+        Ok(data)
     }
 }
 
@@ -565,94 +768,129 @@ pub struct DnsRDataCname {
 
 #[derive(Debug, Default, Clone)]
 pub struct DnsName {
-    pub name: Vec<u8>,
     pub labels: Vec<String>,
+    pub label_map: HashMap<String, u16>,
+    pub pointer_map: HashMap<u16, String>,
 }
 
 impl DnsName {
-    pub fn count(&self) -> u8 {
-        self.labels.len() as u8
+    pub fn count(&self) -> usize {
+        self.label_map.len()
+    }
+
+    pub fn length(&self) -> usize {
+        let mut length = 0;
+        for label in &self.labels {
+            // Add 2 bytes for pointer if label has already been added
+            if self.label_map.get(label).unwrap() != &0 {
+                length += 2;
+                continue;
+            }
+            length += label.len() as u16 + 1; // Add 1 for length byte
+        }
+        length as usize + 1 // Add 1 for null byte
     }
 }
 
 impl DnsPacketData for DnsName {
-    fn from_bytes(data: &[u8]) -> DnsName {
+    fn from_bytes(data: &[u8], offset: usize) -> Result<DnsName> {
         let mut name = DnsName::default();
 
         // Loop through bytes reading label length and then label then add to qname
-        let mut index = 0;
-        let mut label_indexes = HashMap::<u8, String>::new();
+        let mut index = offset;
+        let mut offset_map = HashMap::<u16, String>::new();
 
         loop {
             let label_length = data[index];
 
-            // Check if label is null byte
+            // Check if label is null byte and break loop
             if label_length == 0 {
-                name.name.push(0);
                 break;
             }
 
             // Check if label is a pointer to another label
             if label_length & 0b11000000 == 0b11000000 {
                 let pointer = ((label_length & 0b00111111) as u16) << 8 | data[index + 1] as u16;
-                let pointer_index = pointer as usize;
-                let pointer_label = &label_indexes[&(pointer_index as u8)];
 
-                // Add pointer label to labels and name
-                name.labels.push(pointer_label.to_owned());
-                name.name
-                    .extend_from_slice(&data[pointer_index..pointer_label.len() + 1]);
+                // If we have already seen this pointer then add label to name
+                if offset_map.contains_key(&pointer) {
+                    let label = offset_map[&pointer].to_owned();
+                    name.label_map.insert(label.to_owned(), pointer);
+                    name.pointer_map.insert(pointer, label.to_owned());
+                    name.labels.push(label.to_owned());
+                    index += 2;
+                    continue;
+                }
 
-                // Skip to next label
-                index += 2;
+                // Else reference start of data to get label from question section
+                // Dirty hackery to get this to work
+                let question = DnsQuestion::from_bytes(data, 12).with_context(|| {
+                    format!("Failed to parse DNS question at offset {}", offset + 12)
+                })?;
+
+                if question.qname.label_map.values().any(|&x| x == pointer) {
+                    for (key, value) in &question.qname.label_map {
+                        if *value == pointer {
+                            let label = key.to_owned();
+                            name.label_map.insert(label.to_owned(), pointer);
+                            name.pointer_map.insert(pointer, label.to_owned());
+                            name.labels.push(label.to_owned());
+                            index += 2;
+                            break;
+                        }
+                    }
+                }
+
                 continue;
             }
 
-            index += 1;
-            let label = String::from_utf8(data[index..index + label_length as usize].to_vec())
-                .unwrap_or_else(|_| "".to_string());
+            let label_index = index + 1;
+            let label_bytes = &data[label_index..label_index + label_length as usize];
+            let label = String::from_utf8(label_bytes.to_vec()).unwrap_or_else(|_| "".to_string());
+
+            // Add label to name
+            name.label_map.insert(label.to_owned(), 0);
             name.labels.push(label.to_owned());
-            name.name
-                .extend_from_slice(&data[index - 1..index + label_length as usize]);
-            label_indexes.insert(index as u8, label.to_owned());
-            index += label_length as usize;
+
+            // Add label to local lookup
+            offset_map.insert(index as u16, label.to_owned());
+
+            // Update index to end of label
+            index = label_index + label_length as usize;
         }
 
-        name
+        Ok(name)
     }
 
     /// Convert a domain name to bytes using the format specified in RFC 1035 section 4.1.4
     /// Use name compression if possible
-    fn to_bytes(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
         let mut data = Vec::new();
-        let mut pointer_reference = HashMap::<String, u8>::new();
 
         // Loop through labels and add to data
         for label in &self.labels {
             // Add pointer reference if label has already been added
-            if let Some(index) = pointer_reference.get(label) {
-                data.push(0b11000000 | *index);
+            let pointer = *self.label_map.get(label).unwrap();
+            if pointer != 0 {
+                data.push(0b11000000);
+                data.push(pointer as u8);
                 continue;
             }
 
             // Add label length and label to data
             data.push(label.len() as u8);
             data.extend_from_slice(label.as_bytes());
-
-            // Add pointer reference to hashmap
-            let label_index: u8 = data.len() as u8 - (label.len() - 1) as u8;
-            pointer_reference.insert(label.to_owned(), label_index);
         }
 
         // Add null byte to end of name
         data.push(0);
 
-        data
+        Ok(data)
     }
 }
 
 impl Display for DnsName {
-    fn fmt(&self, f: &mut Formatter) -> Result {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         write!(f, "{}", self.labels.join("."))
     }
 }
@@ -945,14 +1183,14 @@ impl DnsQType {
 }
 
 impl DnsPacketData for DnsQType {
-    fn from_bytes(data: &[u8]) -> DnsQType {
-        let qtype = ((data[0] as u16) << 8) | data[1] as u16;
-        DnsQType::from_u16(qtype)
+    fn from_bytes(data: &[u8], offset: usize) -> Result<DnsQType> {
+        let qtype = ((data[offset] as u16) << 8) | data[offset + 1] as u16;
+        Ok(DnsQType::from_u16(qtype))
     }
 
-    fn to_bytes(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
         let qtype = self.to_u16();
-        Vec::from([(qtype >> 8) as u8, qtype as u8])
+        Ok(Vec::from([(qtype >> 8) as u8, qtype as u8]))
     }
 }
 
@@ -1001,31 +1239,15 @@ impl DnsClass {
 }
 
 impl DnsPacketData for DnsClass {
-    fn from_bytes(data: &[u8]) -> DnsClass {
-        let rclass = ((data[0] as u16) << 8) | data[1] as u16;
-        DnsClass::from_u16(rclass)
+    fn from_bytes(data: &[u8], offset: usize) -> Result<DnsClass> {
+        let rclass = ((data[offset] as u16) << 8) | data[offset + 1] as u16;
+        Ok(DnsClass::from_u16(rclass))
     }
 
-    fn to_bytes(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
         let rclass = self.to_u16();
-        Vec::from([(rclass >> 8) as u8, rclass as u8])
+        Ok(Vec::from([(rclass >> 8) as u8, rclass as u8]))
     }
-}
-
-#[derive(Debug, Default)]
-pub struct DnsResourceRecord {
-    /// A domain name to which this resource record pertains.
-    pub name: Vec<u8>,
-    /// A two octet code which specifies the type of the query.
-    pub rtype: DnsQType,
-    /// A two octet code that specifies the class of the query.
-    pub rclass: u16,
-    /// A 32 bit unsigned integer that specifies the time interval (in seconds) that the resource record may be cached before it should be discarded.
-    pub ttl: u32,
-    /// An unsigned 16 bit integer that specifies the length in octets of the RDATA field.
-    pub rdlength: u16,
-    /// A variable length string of octets that describes the resource.
-    pub rdata: Vec<u8>,
 }
 
 #[cfg(test)]
@@ -1033,17 +1255,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decode_request() {
+    fn decode_request() -> Result<()> {
         // Create a DNS request from the following byte array
 
         let data = vec![
-            0x41, 0x46, 0x01, 0x20, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x08, 0x6d,
-            0x79, 0x63, 0x65, 0x6c, 0x6e, 0x65, 0x74, 0x04, 0x74, 0x65, 0x63, 0x68, 0x00, 0x00,
-            0x01, 0x00, 0x01, 0x00, 0x00, 0x29, 0x04, 0xd0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c,
-            0x00, 0x0a, 0x00, 0x08, 0x31, 0xb9, 0xb2, 0x38, 0x01, 0xba, 0x1a, 0xfe,
+            0x41, 0x46, // ID
+            0x01, 0x20, // Flags
+            0x00, 0x01, // QDCOUNT
+            0x00, 0x00, // ANCOUNT
+            0x00, 0x00, // NSCOUNT
+            0x00, 0x01, // ARCOUNT
+            0x08, 0x6d, 0x79, 0x63, 0x65, 0x6c, 0x6e, 0x65, 0x74, 0x04, 0x74, 0x65, 0x63, 0x68,
+            0x00, 0x00, 0x01, 0x00, 0x01, // QNAME
+            0x00, 0x00, 0x29, 0x04, 0xd0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x0a, 0x00,
+            0x08, 0x31, 0xb9, 0xb2, 0x38, 0x01, 0xba, 0x1a, 0xfe, // ARs
         ];
 
-        let request = DnsRequest::from_bytes(&data);
+        let request = DnsRequest::from_bytes(&data, 0).with_context(|| {
+            format!(
+                "Failed to parse DNS request from bytes {:?} at offset {}",
+                data, 0
+            )
+        })?;
 
         assert_eq!(request.header.id, 16710);
         assert_eq!(request.header.flags.qr, 0);
@@ -1060,14 +1293,7 @@ mod tests {
         assert_eq!(request.header.ancount, 0);
         assert_eq!(request.header.nscount, 0);
         assert_eq!(request.header.arcount, 1);
-        assert_eq!(
-            request.question.qname.name,
-            vec![
-                0x08, 0x6d, 0x79, 0x63, 0x65, 0x6c, 0x6e, 0x65, 0x74, 0x04, 0x74, 0x65, 0x63, 0x68,
-                0x00,
-            ]
-        );
-        assert_eq!(request.question.qname.labels.len(), 2);
+        assert_eq!(request.question.qname.label_map.len(), 2);
         assert_eq!(
             request.question.qname.labels,
             vec!["mycelnet".to_string(), "tech".to_string()]
@@ -1075,6 +1301,205 @@ mod tests {
         assert_eq!(request.question.qtype, DnsQType::A);
         assert_eq!(request.question.qclass, DnsClass::IN);
 
-        assert_eq!(data, request.to_bytes());
+        assert_eq!(
+            data,
+            request.to_bytes().with_context(|| {
+                format!(
+                    "Failed to serialize DNS request {:?} at offset {}",
+                    request, 0
+                )
+            })?
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn decode_response() -> Result<()> {
+        let data = vec![
+            0x44, 0x6f, // ID
+            0x81, 0x80, // Flags
+            0x00, 0x01, // QDCOUNT
+            0x00, 0x02, // ANCOUNT
+            0x00, 0x00, // NSCOUNT
+            0x00, 0x01, // ARCOUNT
+            0x08, 0x6d, 0x79, 0x63, 0x65, 0x6c, 0x6e, 0x65, 0x74, 0x04, 0x74, 0x65, 0x63, 0x68,
+            0x00, // QNAME
+            0x00, 0x01, // QTYPE
+            0x00, 0x01, // QCLASS
+            0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x04, 0x68, 0x15,
+            0x23, 0x92, // RRs
+            0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x04, 0xac, 0x43,
+            0xb0, 0xb6, // RRs
+            0x00, 0x00, 0x29, 0x04, 0xd0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ARs
+        ];
+
+        let response = DnsResponse::from_bytes(&data, 0).with_context(|| {
+            format!(
+                "Failed to parse DNS response from bytes {:?} at offset {}",
+                data, 0
+            )
+        })?;
+
+        assert_eq!(response.header.id, 17519);
+        assert_eq!(response.header.flags.qr, 1);
+        assert_eq!(response.header.flags.opcode, DnsOpcode::Query);
+        assert_eq!(response.header.flags.aa, 0);
+        assert_eq!(response.header.flags.tc, 0);
+        assert_eq!(response.header.flags.rd, 1);
+        assert_eq!(response.header.flags.ra, 1);
+        assert_eq!(response.header.flags.z, 0);
+        assert_eq!(response.header.flags.ad, 0);
+        assert_eq!(response.header.flags.cd, 0);
+        assert_eq!(response.header.flags.rcode, DnsRcode::NoError);
+        assert_eq!(response.header.qdcount, 1);
+        assert_eq!(response.header.ancount, 2);
+        assert_eq!(response.header.nscount, 0);
+        assert_eq!(response.header.arcount, 1);
+        assert_eq!(response.question.qtype, DnsQType::A);
+        assert_eq!(response.question.qclass, DnsClass::IN);
+
+        assert_eq!(response.question.qname.label_map.len(), 2);
+        assert_eq!(
+            response.question.qname.labels,
+            vec!["mycelnet".to_string(), "tech".to_string()]
+        );
+
+        assert_eq!(
+            response
+                .to_bytes()
+                .with_context(|| "Failed to serialize DNS response".to_string())?,
+            data
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn decode_flags() -> Result<()> {
+        let data = vec![0x81, 0x80];
+
+        let flags = DnsFlags::from_bytes(&data, 0).with_context(|| {
+            format!(
+                "Failed to parse DNS flags from bytes {:?} at offset {}",
+                data, 0
+            )
+        })?;
+
+        println!("{:?}", flags);
+
+        assert_eq!(flags.qr, 1);
+        assert_eq!(flags.opcode, DnsOpcode::Query);
+        assert_eq!(flags.aa, 0);
+        assert_eq!(flags.tc, 0);
+        assert_eq!(flags.rd, 1);
+        assert_eq!(flags.ra, 1);
+        assert_eq!(flags.z, 0);
+        assert_eq!(flags.ad, 0);
+        assert_eq!(flags.cd, 0);
+        assert_eq!(flags.rcode, DnsRcode::NoError);
+
+        Ok(())
+    }
+
+    #[test]
+    fn decode_header() -> Result<()> {
+        let data = vec![
+            0x44, 0x6f, // ID
+            0x81, 0x80, // Flags
+            0x00, 0x01, // QDCOUNT
+            0x00, 0x02, // ANCOUNT
+            0x00, 0x00, // NSCOUNT
+            0x00, 0x01, // ARCOUNT
+        ];
+
+        let header = DnsHeader::from_bytes(&data, 0).with_context(|| {
+            format!(
+                "Failed to parse DNS header from bytes {:?} at offset {}",
+                data, 0
+            )
+        })?;
+
+        assert_eq!(header.id, 17519);
+        assert_eq!(header.flags.qr, 1);
+        assert_eq!(header.flags.opcode, DnsOpcode::Query);
+        assert_eq!(header.flags.aa, 0);
+        assert_eq!(header.flags.tc, 0);
+        assert_eq!(header.flags.rd, 1);
+        assert_eq!(header.flags.ra, 1);
+        assert_eq!(header.flags.z, 0);
+        assert_eq!(header.flags.ad, 0);
+        assert_eq!(header.flags.cd, 0);
+        assert_eq!(header.flags.rcode, DnsRcode::NoError);
+        assert_eq!(header.qdcount, 1);
+        assert_eq!(header.ancount, 2);
+        assert_eq!(header.nscount, 0);
+        assert_eq!(header.arcount, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn decode_question() -> Result<()> {
+        let data = vec![
+            0x08, 0x6d, 0x79, 0x63, 0x65, 0x6c, 0x6e, 0x65, 0x74, 0x04, 0x74, 0x65, 0x63, 0x68,
+            0x00, // QNAME
+            0x00, 0x01, // QTYPE
+            0x00, 0x01, // QCLASS
+        ];
+
+        let question = DnsQuestion::from_bytes(&data, 0).with_context(|| {
+            format!(
+                "Failed to parse DNS question from bytes {:?} at offset {}",
+                data, 0
+            )
+        })?;
+
+        assert_eq!(question.qname.label_map.len(), 2);
+        assert_eq!(
+            question.qname.labels,
+            vec!["mycelnet".to_string(), "tech".to_string()]
+        );
+        assert_eq!(question.qtype, DnsQType::A);
+        assert_eq!(question.qclass, DnsClass::IN);
+
+        assert_eq!(
+            question
+                .to_bytes()
+                .with_context(|| "Failed to serialize DNS question".to_string())?,
+            data
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn decode_qname() -> Result<()> {
+        let data = [
+            0x08, 0x6d, 0x79, 0x63, 0x65, 0x6c, 0x6e, 0x65, 0x74, 0x04, 0x74, 0x65, 0x63, 0x68,
+            0x00, // mycelnet.tech
+        ];
+
+        let qname = DnsName::from_bytes(&data, 0).with_context(|| {
+            format!(
+                "Failed to parse DNS name from bytes {:?} at offset {}",
+                data, 0
+            )
+        })?;
+
+        assert_eq!(qname.label_map.len(), 2);
+        assert_eq!(
+            qname.labels,
+            vec!["mycelnet".to_string(), "tech".to_string()]
+        );
+
+        assert_eq!(
+            qname
+                .to_bytes()
+                .with_context(|| "Failed to serialize DNS name".to_string())?,
+            data.to_vec()
+        );
+
+        Ok(())
     }
 }
