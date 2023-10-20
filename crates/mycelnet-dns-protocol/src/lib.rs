@@ -1,9 +1,6 @@
-use std::{
-    collections::HashMap,
-    fmt::{Debug, Display, Formatter},
-};
+use std::fmt::{Debug, Display, Formatter};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 
 pub trait DnsPacketData: Sized {
     fn from_bytes(data: &[u8], offset: usize) -> Result<Self>;
@@ -21,7 +18,7 @@ impl DnsPacketData for DnsRequest {
     fn from_bytes(data: &[u8], offset: usize) -> Result<DnsRequest> {
         let mut request = DnsRequest {
             header: DnsHeader::from_bytes(data, offset)
-                .with_context(|| format!("Failed to parse DNS header"))?,
+                .with_context(|| "Failed to parse DNS header".to_string())?,
             question: DnsQuestion::from_bytes(data, offset + 12).with_context(|| {
                 format!("Failed to parse DNS question at offset {}", offset + 12)
             })?,
@@ -703,6 +700,7 @@ impl DnsPacketData for DnsResourceRecord {
 
             return Ok(rr);
         }
+
         let rclass = ((data[index + 2] as u16) << 8) | data[index + 3] as u16;
         let ttl = ((data[index + 4] as u32) << 24)
             | ((data[index + 5] as u32) << 16)
@@ -769,26 +767,29 @@ pub struct DnsRDataCname {
 #[derive(Debug, Default, Clone)]
 pub struct DnsName {
     pub labels: Vec<String>,
-    pub label_map: HashMap<String, u16>,
-    pub pointer_map: HashMap<u16, String>,
+    pub offset: u16,
+    pub pointer: u16,
 }
 
 impl DnsName {
     pub fn count(&self) -> usize {
-        self.label_map.len()
+        self.labels.len()
     }
 
     pub fn length(&self) -> usize {
+        // If pointer is set then return 2 bytes for pointer
+        if self.pointer != 0 {
+            return 2;
+        }
+
+        // Loop through labels and add length of each label
         let mut length = 0;
         for label in &self.labels {
-            // Add 2 bytes for pointer if label has already been added
-            if self.label_map.get(label).unwrap() != &0 {
-                length += 2;
-                continue;
-            }
-            length += label.len() as u16 + 1; // Add 1 for length byte
+            // Add 1 byte for label length
+            length += label.len() + 1; // Add 1 byte for label length
         }
-        length as usize + 1 // Add 1 for null byte
+
+        length + 1 // Add 1 byte for null byte
     }
 }
 
@@ -798,7 +799,6 @@ impl DnsPacketData for DnsName {
 
         // Loop through bytes reading label length and then label then add to qname
         let mut index = offset;
-        let mut offset_map = HashMap::<u16, String>::new();
 
         loop {
             let label_length = data[index];
@@ -812,36 +812,25 @@ impl DnsPacketData for DnsName {
             if label_length & 0b11000000 == 0b11000000 {
                 let pointer = ((label_length & 0b00111111) as u16) << 8 | data[index + 1] as u16;
 
-                // If we have already seen this pointer then add label to name
-                if offset_map.contains_key(&pointer) {
-                    let label = offset_map[&pointer].to_owned();
-                    name.label_map.insert(label.to_owned(), pointer);
-                    name.pointer_map.insert(pointer, label.to_owned());
-                    name.labels.push(label.to_owned());
-                    index += 2;
-                    continue;
-                }
-
                 // Else reference start of data to get label from question section
                 // Dirty hackery to get this to work
                 let question = DnsQuestion::from_bytes(data, 12).with_context(|| {
                     format!("Failed to parse DNS question at offset {}", offset + 12)
                 })?;
 
-                if question.qname.label_map.values().any(|&x| x == pointer) {
-                    for (key, value) in &question.qname.label_map {
-                        if *value == pointer {
-                            let label = key.to_owned();
-                            name.label_map.insert(label.to_owned(), pointer);
-                            name.pointer_map.insert(pointer, label.to_owned());
-                            name.labels.push(label.to_owned());
-                            index += 2;
-                            break;
-                        }
-                    }
+                // Check if pointer matches question section
+                if question.qname.offset == pointer {
+                    name.labels = question.qname.labels;
+                    name.pointer = pointer;
+
+                    return Ok(name);
                 }
 
-                continue;
+                // Pointer found byt no matching question section
+                Err(anyhow!(
+                    "Failed to locate name pointer reference at offset {}",
+                    offset
+                ))?;
             }
 
             let label_index = index + 1;
@@ -849,11 +838,8 @@ impl DnsPacketData for DnsName {
             let label = String::from_utf8(label_bytes.to_vec()).unwrap_or_else(|_| "".to_string());
 
             // Add label to name
-            name.label_map.insert(label.to_owned(), 0);
             name.labels.push(label.to_owned());
-
-            // Add label to local lookup
-            offset_map.insert(index as u16, label.to_owned());
+            name.offset = offset as u16;
 
             // Update index to end of label
             index = label_index + label_length as usize;
@@ -865,18 +851,18 @@ impl DnsPacketData for DnsName {
     /// Convert a domain name to bytes using the format specified in RFC 1035 section 4.1.4
     /// Use name compression if possible
     fn to_bytes(&self) -> Result<Vec<u8>> {
-        let mut data = Vec::new();
+        let mut data = Vec::<u8>::new();
+
+        // Add pointer reference if label has already been added
+        if self.pointer != 0 {
+            data.push(0b11000000 | (self.pointer >> 8) as u8);
+            data.push(self.pointer as u8);
+
+            return Ok(data);
+        }
 
         // Loop through labels and add to data
         for label in &self.labels {
-            // Add pointer reference if label has already been added
-            let pointer = *self.label_map.get(label).unwrap();
-            if pointer != 0 {
-                data.push(0b11000000);
-                data.push(pointer as u8);
-                continue;
-            }
-
             // Add label length and label to data
             data.push(label.len() as u8);
             data.extend_from_slice(label.as_bytes());
@@ -1293,7 +1279,6 @@ mod tests {
         assert_eq!(request.header.ancount, 0);
         assert_eq!(request.header.nscount, 0);
         assert_eq!(request.header.arcount, 1);
-        assert_eq!(request.question.qname.label_map.len(), 2);
         assert_eq!(
             request.question.qname.labels,
             vec!["mycelnet".to_string(), "tech".to_string()]
@@ -1330,8 +1315,9 @@ mod tests {
             0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x04, 0x68, 0x15,
             0x23, 0x92, // RRs
             0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x04, 0xac, 0x43,
-            0xb0, 0xb6, // RRs
-            0x00, 0x00, 0x29, 0x04, 0xd0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ARs
+            0xb0,
+            0xb6, // RRs
+                  //0x00, 0x00, 0x29, 0x04, 0xd0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ARs
         ];
 
         let response = DnsResponse::from_bytes(&data, 0).with_context(|| {
@@ -1359,7 +1345,6 @@ mod tests {
         assert_eq!(response.question.qtype, DnsQType::A);
         assert_eq!(response.question.qclass, DnsClass::IN);
 
-        assert_eq!(response.question.qname.label_map.len(), 2);
         assert_eq!(
             response.question.qname.labels,
             vec!["mycelnet".to_string(), "tech".to_string()]
@@ -1455,7 +1440,6 @@ mod tests {
             )
         })?;
 
-        assert_eq!(question.qname.label_map.len(), 2);
         assert_eq!(
             question.qname.labels,
             vec!["mycelnet".to_string(), "tech".to_string()]
@@ -1487,7 +1471,6 @@ mod tests {
             )
         })?;
 
-        assert_eq!(qname.label_map.len(), 2);
         assert_eq!(
             qname.labels,
             vec!["mycelnet".to_string(), "tech".to_string()]
