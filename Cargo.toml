@@ -3,15 +3,27 @@ name = "dns-iterate"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [workspace]
 resolver = "2"
 members = [
     "crates/mycelnet-dns-protocol",
 ]
 
+[[bin]]
+name = "dns-iterate"
+path = "src/main.rs"
+
+[lib]
+name = "cli"
+path = "src/lib/cli.rs"
+
+
 [dependencies]
 mycelnet-dns-protocol = { path = "crates/mycelnet-dns-protocol" }
 
 tokio = { version = "1.33.0", features = ["full"] }
-anyhow = "1.0.75"
+anyhow = {version = "1.0.75", features = ["backtrace"] }
+clap = { version = "4.4.6", features = ["derive", "env", "cargo"] }
+structured-logger = "1.0.3"
+log = "0.4.14"
+num_cpus = "1.16.0"

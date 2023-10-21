@@ -90,7 +90,7 @@ impl DnsResponse {
         }
     }
 
-    pub fn from_request(request: &DnsRequest) -> DnsResponse {
+    pub fn from_request(request: &DnsRequest) -> Result<DnsResponse> {
         let mut response = DnsResponse::new();
 
         response.header.id = request.header.id;
@@ -103,7 +103,12 @@ impl DnsResponse {
         response.header.arcount = 0;
         response.question = request.question.clone();
         response.answers = Some(vec![DnsResourceRecord {
-            name: request.question.qname.clone(),
+            name: DnsName::from_question(&request.question).with_context(|| {
+                format!(
+                    "Failed to create DNS resource record from question {:?}",
+                    request.question
+                )
+            })?,
             rtype: request.question.qtype,
             rclass: request.question.qclass,
             ttl: 300,
@@ -111,7 +116,7 @@ impl DnsResponse {
             rdata: vec![127, 0, 0, 1],
         }]);
 
-        response
+        Ok(response)
     }
 }
 
@@ -772,6 +777,14 @@ pub struct DnsName {
 }
 
 impl DnsName {
+    pub fn from_question(question: &DnsQuestion) -> Result<DnsName> {
+        Ok(DnsName {
+            labels: question.qname.labels.clone(),
+            offset: 0,
+            pointer: question.qname.offset,
+        })
+    }
+
     pub fn count(&self) -> usize {
         self.labels.len()
     }
