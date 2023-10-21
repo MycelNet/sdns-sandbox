@@ -21,9 +21,9 @@ path = "src/lib/cli.rs"
 [dependencies]
 mycelnet-dns-protocol = { path = "crates/mycelnet-dns-protocol" }
 
-tokio = { version = "1.33.0", features = ["full"] }
-anyhow = {version = "1.0.75", features = ["backtrace"] }
 clap = { version = "4.4.6", features = ["derive", "env", "cargo"] }
+anyhow = {version = "1.0.75", features = ["backtrace"] }
 structured-logger = "1.0.3"
 log = "0.4.14"
-num_cpus = "1.16.0"
+
+tokio = { version = "1.33.0", features = ["full"] }

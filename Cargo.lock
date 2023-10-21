@@ -176,7 +176,6 @@ dependencies = [
  "clap",
  "log",
  "mycelnet-dns-protocol",
- "num_cpus",
  "structured-logger",
  "tokio",
 ]
